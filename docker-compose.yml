@@ -1,0 +1,289 @@
+version: "3.8"
+
+services:
+  # ============================================
+  # PostgreSQL - Intelligence Store
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: afds-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-afds}
+      POSTGRES_USER: ${POSTGRES_USER:-afds_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-afds_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./infrastructure/postgres/sanctions-schema.sql:/docker-entrypoint-initdb.d/02-sanctions.sql
+      - ./infrastructure/postgres/rules-schema.sql:/docker-entrypoint-initdb.d/03-rules.sql
+      - ./infrastructure/postgres/user-card-schema.sql:/docker-entrypoint-initdb.d/04-user-card.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-afds_admin} -d ${POSTGRES_DB:-afds}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - afds-network
+
+  # ============================================
+  # Apache Kafka (KRaft mode - no Zookeeper)
+  # ============================================
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: afds-kafka
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false
+      - KAFKA_CFG_NUM_PARTITIONS=3
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+    ports:
+      - "9094:9094"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - afds-network
+
+  # ============================================
+  # Kafka Topic Initialization
+  # ============================================
+  kafka-init:
+    image: bitnami/kafka:3.7
+    container_name: afds-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: |
+      -c "
+      echo 'Creating Kafka topics...'
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic raw-transactions --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic scored-events --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic interdiction-commands --partitions 1 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic audit-log --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic detection-rules --partitions 1 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic rule-match-events --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic afds.features.online --partitions 3 --replication-factor 1 --config cleanup.policy=compact
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic afds.model.scores --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic afds.model.explanations --partitions 3 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic afds.model.drift --partitions 1 --replication-factor 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic afds.feedback.labels --partitions 3 --replication-factor 1 --config cleanup.policy=compact
+      echo 'All topics created successfully.'
+      "
+    networks:
+      - afds-network
+
+  # ============================================
+  # Redis — online feature store (Phase A1)
+  # ============================================
+  redis:
+    image: redis:7.4-alpine
+    container_name: afds-redis
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - afds-network
+
+  # ============================================
+  # afds-model-service — CPU-only ONNX Runtime sidecar (Phase B)
+  # ============================================
+  model-api:
+    build:
+      context: ./model-service
+      dockerfile: Dockerfile
+    container_name: afds-model-api
+    environment:
+      - AFDS_MODEL_REGISTRY=/models
+      - AFDS_VAE_MODEL_NAME=vae
+      - AFDS_GNN_MODEL_NAME=gnn
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./model-service/models:/models:ro
+    networks:
+      - afds-network
+
+  # ============================================
+  # Apache Flink — JobManager
+  # ============================================
+  flink-jobmanager:
+    image: flink:1.18-java11
+    container_name: afds-flink-jobmanager
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        state.savepoints.dir: file:///opt/flink/savepoints
+        execution.checkpointing.interval: 60000
+        execution.checkpointing.mode: EXACTLY_ONCE
+    ports:
+      - "8081:8081"
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - flink-savepoints:/opt/flink/savepoints
+      - ./stream-processor/flink-jobs:/opt/flink/jobs
+      - ./stream-processor/config:/opt/flink/conf-extra
+    networks:
+      - afds-network
+
+  # ============================================
+  # Apache Flink - TaskManager
+  # ============================================
+  flink-taskmanager:
+    image: flink:1.18-java11
+    container_name: afds-flink-taskmanager
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.interval: 60000
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./stream-processor/flink-jobs:/opt/flink/jobs
+    networks:
+      - afds-network
+
+  # ============================================
+  # FastAPI Backend
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: afds-backend
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - afds-network
+
+  # ============================================
+  # React Frontend (Dev Server)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: afds-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - afds-network
+
+  # ============================================
+  # MCP Server - AI Tool Interface
+  # ============================================
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: afds-mcp-server
+    environment:
+      - DB_DSN=postgresql://afds_admin:afds_secret@postgres:5432/afds
+      - KAFKA_BOOTSTRAP=kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - afds-network
+
+  # ============================================
+  # Prometheus - Metrics Collection
+  # ============================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: afds-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    networks:
+      - afds-network
+
+  # ============================================
+  # Grafana - Dashboards & Visualization
+  # ============================================
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: afds-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SERVER_ROOT_URL=http://localhost:3000/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - afds-network
+
+volumes:
+  postgres-data:
+  kafka-data:
+  flink-checkpoints:
+  flink-savepoints:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  afds-network:
+    driver: bridge

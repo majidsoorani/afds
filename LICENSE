@@ -1,0 +1,16 @@
+AFDS Community and Commercial Licensing
+
+Copyright (c) 2026 AFDS Contributors
+
+This repository is dual-licensed.
+
+Option 1: GNU Affero General Public License v3.0 only (AGPL-3.0-only)
+- You may use, modify, and redistribute this software under AGPL-3.0-only.
+- Full AGPL-3.0 text: https://www.gnu.org/licenses/agpl-3.0.txt
+
+Option 2: Commercial License
+- If you do not want to comply with AGPL obligations, you must obtain a
+  commercial license.
+- Commercial terms: see COMMERCIAL_LICENSE.md
+
+SPDX-License-Identifier: AGPL-3.0-only

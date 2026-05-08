@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: afds-flink-jobmanager
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: flink-jobmanager
+    app.kubernetes.io/part-of: afds
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: 8081
+      protocol: TCP
+      name: web-ui
+    - port: 6123
+      targetPort: 6123
+      protocol: TCP
+      name: rpc
+    - port: 6124
+      targetPort: 6124
+      protocol: TCP
+      name: blob
+  selector:
+    app.kubernetes.io/name: flink-jobmanager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: afds-flink-jobmanager
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: flink-jobmanager
+    app.kubernetes.io/part-of: afds
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flink-jobmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flink-jobmanager
+        app.kubernetes.io/part-of: afds
+    spec:
+      containers:
+        - name: jobmanager
+          image: flink:1.18-java11
+          command: ["/docker-entrypoint.sh"]
+          args: ["jobmanager"]
+          ports:
+            - containerPort: 8081
+              name: web-ui
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 6124
+              name: blob
+          env:
+            - name: FLINK_PROPERTIES
+              value: |
+                jobmanager.rpc.address: afds-flink-jobmanager
+                state.backend: rocksdb
+                state.checkpoints.dir: file:///opt/flink/checkpoints
+                state.savepoints.dir: file:///opt/flink/savepoints
+                execution.checkpointing.interval: 60000
+                execution.checkpointing.mode: EXACTLY_ONCE
+                rest.flamegraph.enabled: true
+          volumeMounts:
+            - name: flink-checkpoints
+              mountPath: /opt/flink/checkpoints
+            - name: flink-savepoints
+              mountPath: /opt/flink/savepoints
+            - name: flink-jobs
+              mountPath: /opt/flink/jobs
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 45
+            periodSeconds: 30
+      volumes:
+        - name: flink-checkpoints
+          emptyDir: {}
+        - name: flink-savepoints
+          emptyDir: {}
+        - name: flink-jobs
+          configMap:
+            name: afds-flink-jobs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: afds-flink-taskmanager
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: flink-taskmanager
+    app.kubernetes.io/part-of: afds
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flink-taskmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flink-taskmanager
+        app.kubernetes.io/part-of: afds
+    spec:
+      containers:
+        - name: taskmanager
+          image: flink:1.18-java11
+          command: ["/docker-entrypoint.sh"]
+          args: ["taskmanager"]
+          ports:
+            - containerPort: 6121
+              name: data
+            - containerPort: 6122
+              name: rpc
+          env:
+            - name: FLINK_PROPERTIES
+              value: |
+                jobmanager.rpc.address: afds-flink-jobmanager
+                taskmanager.numberOfTaskSlots: 4
+                state.backend: rocksdb
+                state.checkpoints.dir: file:///opt/flink/checkpoints
+                execution.checkpointing.interval: 60000
+          volumeMounts:
+            - name: flink-checkpoints
+              mountPath: /opt/flink/checkpoints
+            - name: flink-jobs
+              mountPath: /opt/flink/jobs
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: flink-checkpoints
+          emptyDir: {}
+        - name: flink-jobs
+          configMap:
+            name: afds-flink-jobs
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: afds-flink-jobs
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: flink-jobs
+    app.kubernetes.io/part-of: afds
+data:
+  risk-scoring-pipeline.sql: |
+    -- This file is auto-generated from stream-processor/flink-jobs/
+    -- Deploy the full SQL file via Flink SQL CLI or REST API
+    -- See stream-processor/flink-jobs/risk-scoring-pipeline.sql for source

@@ -1,0 +1,111 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: afds-ingress
+  namespace: afds
+  labels:
+    app.kubernetes.io/part-of: afds
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+    nginx.ingress.kubernetes.io/websocket-services: "afds-backend"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - afds.example.com
+      secretName: afds-tls
+  rules:
+    - host: afds.example.com
+      http:
+        paths:
+          # API traffic → Backend
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: afds-backend
+                port:
+                  number: 8000
+          # Health endpoint → Backend
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: afds-backend
+                port:
+                  number: 8000
+          # Grafana → Monitoring
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: afds-grafana
+                port:
+                  number: 3000
+          # Prometheus metrics → Backend
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: afds-backend
+                port:
+                  number: 8000
+          # Everything else → Frontend
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: afds-frontend
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: afds-network-policy
+  namespace: afds
+  labels:
+    app.kubernetes.io/part-of: afds
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: afds
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic within the namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: afds
+    # Allow ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+  egress:
+    # Allow traffic within the namespace
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: afds
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow external HTTPS (sanctions data, etc.)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

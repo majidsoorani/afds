@@ -1,0 +1,52 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Docker volumes
+postgres-data/
+kafka-data/
+flink-checkpoints/
+flink-savepoints/
+
+# Sanctions data (large files)
+data-pipeline/sanctions-data/*.json
+data-pipeline/sanctions-data/*.csv
+
+# Generated/private scored outputs
+data-pipeline/scored-output/*.json
+data-pipeline/scored-output/*.sql
+!data-pipeline/scored-output/README.md
+
+# Generated documents and build metadata
+*.pdf
+frontend/*.tsbuildinfo
+
+# Real Kubernetes secret manifests
+infrastructure/k8s/secrets.yaml
+infrastructure/k8s/deploy/secrets.yaml
+
+# Logs
+*.log
+logs/

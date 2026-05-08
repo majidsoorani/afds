@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: afds
+  labels:
+    app.kubernetes.io/part-of: afds
+    app.kubernetes.io/managed-by: kubectl

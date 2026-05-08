@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: afds-config
+  namespace: afds
+  labels:
+    app.kubernetes.io/part-of: afds
+data:
+  POSTGRES_HOST: "afds-postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "afds"
+  KAFKA_BOOTSTRAP_SERVERS: "afds-kafka:9092"
+  KAFKA_SECURITY_PROTOCOL: "PLAINTEXT"
+  FLINK_JOBMANAGER_HOST: "afds-flink-jobmanager"
+  FLINK_JOBMANAGER_PORT: "8081"
+  BACKEND_HOST: "0.0.0.0"
+  BACKEND_PORT: "8000"
+  BACKEND_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000,https://afds.example.com"
+  DEMO_BASE_URL: "http://afds-backend:8000"
+  DEMO_REQUEST_TIMEOUT_SECONDS: "20"
+  DEMO_JOB_TIMEOUT_SECONDS: "1800"
+  # ── Advanced AFDS (GNN + DL + XAI) — Phase A/B foundations ──
+  # Mode gate: off | shadow | hybrid | autonomous. Default off = rules only.
+  AFDS_MODEL_MODE: "off"
+  AFDS_MODEL_ENABLED: "false"
+  AFDS_MODEL_ENDPOINT: "http://afds-model-api:8080"
+  AFDS_MODEL_TIMEOUT_MS: "40"
+  AFDS_GNN_ENABLED: "false"
+  AFDS_VAE_ENABLED: "false"
+  AFDS_XAI_MODE: "symbolic"
+  AFDS_XAI_TIMEOUT_MS: "10"
+  # Redis online feature store. Empty => in-memory fallback (laptop-safe).
+  AFDS_FEATURE_STORE_URL: "redis://afds-redis:6379/0"
+  AFDS_DRIFT_ALERT_THRESHOLD: "0.2"

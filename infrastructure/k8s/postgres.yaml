@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: afds-postgres-pvc
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: afds
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: afds-postgres
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: afds
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app.kubernetes.io/name: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: afds-postgres
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: afds
+spec:
+  serviceName: afds-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: afds
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: afds-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: afds-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: afds-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - afds_admin
+                - -d
+                - afds
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - afds_admin
+                - -d
+                - afds
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: afds-postgres-pvc
+        - name: init-scripts
+          configMap:
+            name: afds-postgres-init
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: afds-postgres-init
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: afds
+data:
+  01-init.sql: |
+    -- AFDS Database Schema
+    CREATE SCHEMA IF NOT EXISTS afds;
+    CREATE SCHEMA IF NOT EXISTS sanctions;
+
+    -- Enable extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+    -- Transactions table
+    CREATE TABLE IF NOT EXISTS afds.transactions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        external_id VARCHAR(255) UNIQUE NOT NULL,
+        sender_id VARCHAR(255) NOT NULL,
+        receiver_id VARCHAR(255),
+        amount DECIMAL(18,4) NOT NULL,
+        currency VARCHAR(3) NOT NULL,
+        sender_iban VARCHAR(34),
+        receiver_iban VARCHAR(34),
+        transaction_type VARCHAR(50) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        iso20022_msg_type VARCHAR(20),
+        raw_payload JSONB,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMPTZ
+    );
+
+    CREATE INDEX idx_transactions_sender ON afds.transactions(sender_id);
+    CREATE INDEX idx_transactions_created ON afds.transactions(created_at DESC);
+    CREATE INDEX idx_transactions_status ON afds.transactions(status);
+    CREATE INDEX idx_transactions_external ON afds.transactions(external_id);
+
+    -- Risk Scores table
+    CREATE TABLE IF NOT EXISTS afds.risk_scores (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        transaction_id UUID NOT NULL REFERENCES afds.transactions(id),
+        entity_id VARCHAR(255) NOT NULL,
+        risk_score DECIMAL(5,2) NOT NULL,
+        risk_level VARCHAR(20) NOT NULL,
+        factors JSONB DEFAULT '[]',
+        velocity_score DECIMAL(5,2) DEFAULT 0,
+        sanctions_score DECIMAL(5,2) DEFAULT 0,
+        pattern_score DECIMAL(5,2) DEFAULT 0,
+        model_version VARCHAR(50),
+        scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX idx_risk_scores_txn ON afds.risk_scores(transaction_id);
+    CREATE INDEX idx_risk_scores_entity ON afds.risk_scores(entity_id);
+    CREATE INDEX idx_risk_scores_level ON afds.risk_scores(risk_level);
+
+    -- Alerts table
+    CREATE TABLE IF NOT EXISTS afds.alerts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        transaction_id UUID NOT NULL REFERENCES afds.transactions(id),
+        alert_type VARCHAR(50) NOT NULL,
+        severity VARCHAR(20) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        description TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+        assigned_to VARCHAR(255),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX idx_alerts_status ON afds.alerts(status);
+    CREATE INDEX idx_alerts_severity ON afds.alerts(severity);
+
+    -- Interdiction Actions table
+    CREATE TABLE IF NOT EXISTS afds.interdiction_actions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        transaction_id UUID NOT NULL REFERENCES afds.transactions(id),
+        action VARCHAR(20) NOT NULL,
+        reason TEXT,
+        is_automated BOOLEAN DEFAULT TRUE,
+        analyst_decision VARCHAR(20),
+        analyst_id VARCHAR(255),
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+  02-sanctions.sql: |
+    -- Sanctions screening schema
+    CREATE TABLE IF NOT EXISTS sanctions.entities (
+        id VARCHAR(255) PRIMARY KEY,
+        schema_type VARCHAR(100),
+        name TEXT NOT NULL,
+        aliases TEXT[],
+        birth_date VARCHAR(50),
+        countries TEXT[],
+        identifiers JSONB DEFAULT '{}',
+        sanctions_programs TEXT[],
+        source VARCHAR(100),
+        first_seen TIMESTAMPTZ DEFAULT NOW(),
+        last_seen TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX idx_sanctions_name_trgm ON sanctions.entities USING gin (name gin_trgm_ops);
+
+    CREATE OR REPLACE FUNCTION sanctions.search_entity_names(
+        search_name TEXT,
+        threshold FLOAT DEFAULT 0.5,
+        max_results INT DEFAULT 10
+    )
+    RETURNS TABLE(entity_id VARCHAR, matched_name TEXT, similarity FLOAT)
+    LANGUAGE SQL STABLE AS $$
+        SELECT id, name, similarity(name, search_name)::FLOAT
+        FROM sanctions.entities
+        WHERE similarity(name, search_name) >= threshold
+        ORDER BY similarity(name, search_name) DESC
+        LIMIT max_results;
+    $$;

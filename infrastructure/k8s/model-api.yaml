@@ -1,0 +1,111 @@
+# ============================================
+# afds-model-api — CPU-only ONNX Runtime sidecar (Phase B)
+# GPU / Triton variant added in Phase F.
+# ============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: afds-model-api
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: model-api
+    app.kubernetes.io/part-of: afds
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: model-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: afds-model-api
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: model-api
+    app.kubernetes.io/part-of: afds
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: model-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: model-api
+        app.kubernetes.io/part-of: afds
+    spec:
+      containers:
+        - name: model-api
+          image: ghcr.io/majidsoorani/afds-model-service:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AFDS_MODEL_REGISTRY
+              value: "/models"
+            - name: AFDS_VAE_MODEL_NAME
+              value: "vae"
+            - name: AFDS_GNN_MODEL_NAME
+              value: "gnn"
+          volumeMounts:
+            - name: model-registry
+              mountPath: /models
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        # Phase A: emptyDir so the sidecar boots with no artifacts and returns
+        # deterministic fallbacks (zero-score) in Shadow mode. Switch to a
+        # PVC backed by S3 sync or an init-container pulling from the
+        # versioned S3 prefix (AFDS_MODEL_S3_PREFIX) in Phase B+.
+        - name: model-registry
+          emptyDir: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: afds-model-api-hpa
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: model-api
+    app.kubernetes.io/part-of: afds
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: afds-model-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

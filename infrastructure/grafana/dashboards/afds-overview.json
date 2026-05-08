@@ -1,0 +1,157 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "afds-overview",
+    "title": "AFDS — Autonomous Fraud Defense System",
+    "tags": ["afds", "aml", "fraud"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "panels": [
+      {
+        "id": 1,
+        "title": "HTTP Request Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{service=\"afds-backend\"}[5m])",
+            "legendFormat": "{{method}} {{handler}} {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Request Latency (p95)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service=\"afds-backend\"}[5m]))",
+            "legendFormat": "p95 {{handler}}"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Transactions Scored / min",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{handler=\"/api/v1/realtime/score\", status=\"200\"}[5m]) * 60",
+            "legendFormat": "txns/min"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Active Alerts",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+        "targets": [
+          {
+            "expr": "afds_alerts_open_total",
+            "legendFormat": "open alerts"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Kafka Consumer Lag",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          {
+            "expr": "kafka_consumer_group_lag{group=~\"afds.*\"}",
+            "legendFormat": "{{topic}} ({{partition}})"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Flink Checkpoint Duration",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          {
+            "expr": "flink_jobmanager_job_lastCheckpointDuration",
+            "legendFormat": "checkpoint ms"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Risk Score Distribution",
+        "type": "bargauge",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          {
+            "expr": "afds_risk_level_total",
+            "legendFormat": "{{level}}"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Detection Rules Active",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 20 },
+        "targets": [
+          {
+            "expr": "afds_detection_rules_active",
+            "legendFormat": "rules"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Rule Matches / min",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 6, "y": 20 },
+        "targets": [
+          {
+            "expr": "rate(afds_rule_matches_total[5m]) * 60",
+            "legendFormat": "{{rule_name}}"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Pod CPU Usage",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+        "targets": [
+          {
+            "expr": "rate(container_cpu_usage_seconds_total{namespace=\"afds\"}[5m])",
+            "legendFormat": "{{pod}}"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Pod Memory Usage",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+        "targets": [
+          {
+            "expr": "container_memory_working_set_bytes{namespace=\"afds\"} / 1024 / 1024",
+            "legendFormat": "{{pod}} (MiB)"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "SAR Filings",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 20 },
+        "targets": [
+          {
+            "expr": "afds_sar_filings_total",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      }
+    ]
+  }
+}

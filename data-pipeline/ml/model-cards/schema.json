@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afds.internal/schemas/model-card.v1.json",
+  "title": "AFDS Model Card",
+  "description": "Compliance + auditability card for a versioned AFDS model artifact. Every ONNX bundle uploaded to the S3 registry MUST be accompanied by a populated card under data-pipeline/ml/model-cards/{model_name}/{version}.json. PR review is required for new cards (CODEOWNERS: ml-governance).",
+  "type": "object",
+  "required": [
+    "model_name",
+    "version",
+    "authorizer",
+    "trained_at",
+    "training",
+    "baseline",
+    "metrics",
+    "governance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "model_name": {
+      "type": "string",
+      "enum": ["vae", "gnn", "fastshap_surrogate"],
+      "description": "Registry key. Must match the directory the artifact is uploaded under."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v\\d{4}-\\d{2}-\\d{2}-\\d{4}$",
+      "description": "Deterministic UTC version stamp v{YYYY-MM-DD-HHMM}."
+    },
+    "authorizer": {
+      "type": "object",
+      "required": ["principal", "role", "approved_at"],
+      "properties": {
+        "principal": {
+          "type": "string",
+          "description": "IAM / SSO principal responsible for promotion (e.g., an ml-governance member). Must not be 'SYSTEM'."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["ml-governance", "fraud-ops-lead", "cto-delegate"]
+        },
+        "approved_at": {"type": "string", "format": "date-time"},
+        "ticket_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link to the change-review ticket (Linear/Jira)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "trained_at": {"type": "string", "format": "date-time"},
+    "training": {
+      "type": "object",
+      "required": ["horizon_days", "n_samples", "dataset", "feature_names", "git_sha"],
+      "properties": {
+        "horizon_days": {"type": "integer", "minimum": 1},
+        "n_samples": {"type": "integer", "minimum": 1},
+        "n_positive_labels": {"type": "integer", "minimum": 0},
+        "n_negative_labels": {"type": "integer", "minimum": 0},
+        "dataset": {
+          "type": "string",
+          "description": "Source identifier, e.g., 'elliptic-v2+internal-labels-2026w16'."
+        },
+        "feature_names": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "Must match backend/app/services/unsupervised.py::_FEATURE_NAMES order."
+        },
+        "git_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$",
+          "description": "Commit that produced this artifact (for reproducibility)."
+        },
+        "seed": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "baseline": {
+      "type": "object",
+      "required": ["psi_at_promotion", "calibration_path"],
+      "properties": {
+        "psi_at_promotion": {
+          "type": "number",
+          "minimum": 0.0,
+          "description": "PSI of the new artifact's score distribution vs the previous production version. Must be < 0.25 at promotion time."
+        },
+        "calibration_path": {
+          "type": "string",
+          "description": "S3 or filesystem path to the calibration.json emitted alongside model.onnx."
+        },
+        "score_percentiles": {
+          "type": "object",
+          "properties": {
+            "p05": {"type": "number"},
+            "p50": {"type": "number"},
+            "p95": {"type": "number"},
+            "p99": {"type": "number"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["precision", "recall"],
+      "properties": {
+        "precision": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "recall": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "f1": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "auc": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "auc_uplift_vs_rules_pp": {
+          "type": "number",
+          "description": "Percentage-point AUC uplift over the rules-only baseline on the same backtest. Promotion to Hybrid requires >= 3pp (plan H1)."
+        },
+        "timeout_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Fraction of /score calls that hit the 80ms timeout during the backtest load run. Must be < 0.005 at promotion."
+        },
+        "p95_latency_ms": {
+          "type": "number",
+          "minimum": 0.0,
+          "description": "p95 end-to-end scoring latency from the Flink async-I/O operator."
+        }
+      },
+      "additionalProperties": false
+    },
+    "governance": {
+      "type": "object",
+      "required": ["rollout_mode_at_promotion", "kill_switch_drill"],
+      "properties": {
+        "rollout_mode_at_promotion": {
+          "type": "string",
+          "enum": ["shadow", "canary", "hybrid", "autonomous"],
+          "description": "AFDS_MODEL_MODE value the artifact is cleared for. Canary/Hybrid promotion requires matching the gate evidence."
+        },
+        "canary_start_percentage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "kill_switch_drill": {
+          "type": "object",
+          "required": ["run_at", "p99_us", "passed"],
+          "properties": {
+            "run_at": {"type": "string", "format": "date-time"},
+            "p99_us": {
+              "type": "number",
+              "minimum": 0.0,
+              "description": "p99 latency of the AFDS_MODEL_MODE=off short-circuit in microseconds. MUST be < 1000."
+            },
+            "passed": {"type": "boolean"},
+            "iterations": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "parity_gate": {
+          "type": "object",
+          "required": ["passed", "total"],
+          "properties": {
+            "passed": {"type": "integer"},
+            "total": {"type": "integer"},
+            "report_url": {"type": "string"}
+          },
+          "description": "Latest public validation result."
+        },
+        "notes": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

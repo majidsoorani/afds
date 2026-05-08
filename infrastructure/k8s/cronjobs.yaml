@@ -1,0 +1,394 @@
+# ============================================
+# AFDS CronJobs — Batch processing (replaces Apache Spark)
+# ============================================
+
+# ── CronJob 1: Batch Sanctions Re-screening ──
+# Re-screens all active entities against updated sanctions lists
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-batch-sanctions-screening
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: batch-sanctions
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: batch-sanctions
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sanctions-screener
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.batch_sanctions_screening"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+
+---
+# ── CronJob 2: Risk Re-scoring ──
+# Re-scores transactions from last 24h with updated rules and models
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-batch-risk-rescoring
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: batch-rescoring
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 3 * * *"  # Daily at 3 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: batch-rescoring
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: risk-rescorer
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.batch_risk_rescoring"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 512Mi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+
+---
+# ── CronJob 3: Sanctions List Sync ──
+# Downloads latest sanctions lists (OFAC, UN, EU, OpenSanctions)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-sanctions-list-sync
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: sanctions-sync
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 1 * * *"  # Daily at 1 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: sanctions-sync
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sanctions-syncer
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.sync_sanctions_lists"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 1Gi
+
+---
+# ── CronJob 4: Report Generation ──
+# Generates daily compliance reports and pending SAR reminders
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-daily-reports
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: daily-reports
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 6 * * 1-5"  # Weekdays at 6 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: daily-reports
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: report-generator
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.generate_daily_report"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+
+---
+# ── CronJob 5: Stale Alert Escalation ──
+# Escalates alerts that have been OPEN for > SLA threshold
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-alert-escalation
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: alert-escalation
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: alert-escalation
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: escalation-checker
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.escalate_stale_alerts"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+
+---
+# ── CronJob 6: Chargeback / Analyst Feedback Loop (Gap 9) ──
+# Nightly: joins alert disposition + SAR filings with risk-score factors,
+# emits per-factor precision + suggest-only tighten/loosen advisories.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-feedback-loop
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: feedback-loop
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "15 2 * * *"  # 02:15 UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: feedback-loop
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: feedback-loop
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.feedback_loop"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              env:
+                - name: AFDS_FEEDBACK_HORIZON_DAYS
+                  value: "30"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+
+---
+# ── CronJob 7: Morning Demo + Notifications ──
+# Runs service demos and daily jobs, then sends Teams notifications
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-morning-demo-notifications
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: morning-demo-notifications
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 7 * * *"  # Daily at 7 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: morning-demo-notifications
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: morning-demo-runner
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.morning_demo_notifications"]
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+
+---
+# ── CronJob: Model Retraining (Phase G2) ──
+# Fine-tunes VAE + GraphSAGE on the rolling window of analyst-labeled
+# alerts and pushes versioned ONNX artifacts to the S3 registry. On
+# success it POSTs /models/reload so the model-api sidecar hot-swaps
+# within seconds — no pod restart, no dropped inference requests.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: afds-model-retrain
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: afds-model-retrain
+    app.kubernetes.io/part-of: afds
+spec:
+  schedule: "0 4 * * *"  # Daily at 04:00 UTC (plan G2)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 10800  # 3h hard cap
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: afds-model-retrain
+        spec:
+          restartPolicy: OnFailure
+          # IRSA: the service account carries the s3:PutObject role
+          # for the model registry bucket. No static keys on disk.
+          serviceAccountName: afds-model-retrain
+          # GPU node pool when available; falls back to CPU otherwise.
+          # nodeSelector:
+          #   nvidia.com/gpu: "true"
+          containers:
+            - name: retrain
+              image: ghcr.io/majidsoorani/afds-backend:latest
+              command: ["python", "-m", "app.jobs.model_retrain"]
+              env:
+                - name: AFDS_RETRAIN_HORIZON_DAYS
+                  value: "14"
+                - name: AFDS_RETRAIN_MIN_SAMPLES
+                  value: "200"
+                - name: AFDS_MODEL_API_URL
+                  value: "http://afds-model-api:8080"
+              envFrom:
+                - configMapRef:
+                    name: afds-config
+                - secretRef:
+                    name: afds-secrets
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: 1Gi
+                limits:
+                  cpu: "2"
+                  memory: 4Gi
+              # Tight security posture for a job that uploads model
+              # artifacts to production S3.
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi
+
+---
+# Service account for the retrain job. IRSA annotation is populated per
+# cluster via the deploy overlay (infrastructure/k8s/deploy/kustomization.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: afds-model-retrain
+  namespace: afds
+  labels:
+    app.kubernetes.io/name: afds-model-retrain
+    app.kubernetes.io/part-of: afds
